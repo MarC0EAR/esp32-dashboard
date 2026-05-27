@@ -5,15 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Monitor ESP32: GPS y Sensores</title>
     
-    <!-- Librería para el mapa (Leaflet) -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <style>
         body { font-family: Arial, sans-serif; background-color: #f4f4f9; padding: 20px; }
         .dashboard { display: flex; gap: 20px; margin-bottom: 20px; }
         .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); flex: 1; text-align: center; }
         .valor { font-size: 2em; font-weight: bold; color: #d9534f; }
+        /* NUEVO: Estilo para el contenedor de la gráfica */
+        .container-grafica { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 20px; height: 250px; }
         #mapa { height: 400px; width: 100%; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
     </style>
 </head>
@@ -24,7 +27,7 @@
     <div class="dashboard">
         <div class="card">
             <h3>Estado de Conexión</h3>
-            <p id="estado" style="color: orange;">Conectando...</p>
+            <p id="estado" style="color: orange; font-weight: bold;">Conectando...</p>
         </div>
         <div class="card">
             <h3>Obstáculos Detectados</h3>
@@ -32,12 +35,14 @@
         </div>
     </div>
 
-    <!-- Contenedor del mapa -->
+    <div class="container-grafica">
+        <canvas id="graficaObstaculos"></canvas>
+    </div>
+
     <div id="mapa"></div>
 
     <script>
         // 1. Configurar el mapa
-        // Iniciamos en unas coordenadas base (ej. Ciudad de México) con un zoom de 15
         const mapa = L.map('mapa').setView([19.4326, -99.1332], 15);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
@@ -47,9 +52,38 @@
         // Marcador del GPS
         const marcador = L.marker([19.4326, -99.1332]).addTo(mapa);
 
-        // 2. Conectar al WebSocket del ESP32
-        // Cambia esta IP por la IP real de tu ESP32 en la red
-        const gateway = `ws://192.168.3.93/ws`; 
+        // NUEVO: 2. Inicializar la Gráfica Lineal (Chart.js)
+        const ctx = document.getElementById('graficaObstaculos').getContext('2d');
+        const miGrafica = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [], // Aquí se guardarán las marcas de tiempo (HH:MM:SS)
+                datasets: [{
+                    label: 'Historial de Obstáculos (1m o menos)',
+                    data: [], // Valores del conteo (0, 1 o 2)
+                    borderColor: '#d9534f',
+                    backgroundColor: 'rgba(217, 83, 79, 0.1)',
+                    borderWidth: 3,
+                    tension: 0.2,
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        min: 0,
+                        max: 2,
+                        ticks: { stepSize: 1 } // Forzar que solo muestre enteros 0, 1 y 2
+                    }
+                }
+            }
+        });
+
+        // 3. Conectar al WebSocket del ESP32
+        // CORRECCIÓN: Apunta directamente al puerto 80 de tu IP sin el sufijo "/ws"
+        const gateway = `ws://192.168.3.93:80/`; 
         let websocket;
 
         function iniciarWebSocket() {
@@ -71,28 +105,40 @@
             console.log('Conexión cerrada');
             document.getElementById('estado').innerText = "Desconectado";
             document.getElementById('estado').style.color = "red";
-            // Intentar reconectar después de 2 segundos
             setTimeout(iniciarWebSocket, 2000);
         }
 
-        // 3. Recibir y procesar los datos
+        // 4. Recibir y procesar los datos
         function onMessage(event) {
             console.log("Datos recibidos: ", event.data);
             
             try {
-                // Convertir el texto JSON a un objeto JavaScript
                 const datos = JSON.parse(event.data);
                 
-                // Actualizar obstáculos
+                // Actualizar obstáculos en la tarjeta y en la gráfica
                 if(datos.obstaculos !== undefined) {
                     document.getElementById('obstaculos').innerText = datos.obstaculos;
+                    
+                    // Obtener la hora exacta del sistema para el eje X de la gráfica
+                    const tiempoActual = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+                    
+                    // Insertar nuevos puntos en los arreglos de la gráfica
+                    miGrafica.data.labels.push(tiempoActual);
+                    miGrafica.data.datasets[0].data.push(datos.obstaculos);
+                    
+                    // Efecto Scroll: Limitar la gráfica a 15 lecturas para que no se sature la pantalla
+                    if(miGrafica.data.labels.length > 15) {
+                        miGrafica.data.labels.shift();
+                        miGrafica.data.datasets[0].data.shift();
+                    }
+                    miGrafica.update(); // Renderizar actualización visual de la gráfica
                 }
 
                 // Actualizar GPS en el mapa
                 if(datos.lat && datos.lng) {
                     const nuevaPosicion = new L.LatLng(datos.lat, datos.lng);
                     marcador.setLatLng(nuevaPosicion);
-                    mapa.panTo(nuevaPosicion); // Mover la cámara a la nueva posición
+                    mapa.panTo(nuevaPosicion); 
                 }
                 
             } catch (error) {
@@ -100,7 +146,6 @@
             }
         }
 
-        // Arrancar la conexión cuando la página cargue
         window.addEventListener('load', iniciarWebSocket);
     </script>
 </body>
